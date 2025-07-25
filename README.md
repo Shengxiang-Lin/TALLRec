@@ -43,4 +43,12 @@ Note that we will automatically detect all the different seed and sample files i
 
 Our project is developed based on the Alpaca_lora [repo](https://github.com/tloen/alpaca-lora), thanks for their contributions.
 
-For "Environment setting sharing for CUDA 12.0", please see [here](https://github.com/SAI990323/TALLRec/issues/46).
+For "Environment setting sharing for CUDA 12.0", please see [here](https://github.com/SAI990323/TALLRec/issues/46).     
+
+```
+bash ./shell/instruct_7B/instruct_7B_book.sh  0 42
+```
+
+```
+bash ./shell/evaluate.sh 1 results_medium_42_64/adapter_config.json 
+```
