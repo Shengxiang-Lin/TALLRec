@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+*.log
+
+.env
+venv/
+
+.idea/
+.vscode/
+
+bitsandbytes/
+base_models/
+alpaca-lora-7B/
+results_medium/
