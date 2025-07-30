@@ -23,9 +23,36 @@ from peft import (  # noqa: E402
     prepare_model_for_int8_training,
     set_peft_model_state_dict,
 )
-from transformers import LlamaForCausalLM, LlamaTokenizer  # noqa: F402
+from transformers import (
+    EarlyStoppingCallback,
+    TrainerCallback,
+    LlamaForCausalLM,
+    LlamaTokenizer,
+    TrainingArguments,
+    TrainerState, 
+    TrainerControl
+)
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from sklearn.metrics import roc_auc_score
 
+class SavePeftModelCallback(TrainerCallback):
+    def on_save(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
+
+        peft_model_path = os.path.join(checkpoint_folder, "adapter_model")
+        kwargs["model"].save_pretrained(peft_model_path)
+
+        pytorch_model_path = os.path.join(checkpoint_folder, "pytorch_model.bin")
+        if os.path.exists(pytorch_model_path):
+            os.remove(pytorch_model_path)
+        return control
+    
 def train(
     # model/data params
     base_model: str = "",  # the only required argument
@@ -111,7 +138,6 @@ def train(
 
     model = LlamaForCausalLM.from_pretrained(
         base_model,
-        use_safetensors=False,
         load_in_8bit=True,
         torch_dtype=torch.float16,
         device_map=device_map,
@@ -173,19 +199,15 @@ def train(
     )
     model = get_peft_model(model, config)
 
-    
-
     if train_data_path.endswith(".json"):  # todo: support jsonl
         train_data = load_dataset("json", data_files=train_data_path)
     else:
         train_data = load_dataset(train_data_path)
-    
     if val_data_path.endswith(".json"):  # todo: support jsonl
         val_data = load_dataset("json", data_files=val_data_path)
     else:
         val_data = load_dataset(val_data_path)
 
-    
     # train_data = train_data.shuffle(seed=42)[:sample] if sample > -1 else train_data
     # print(len(train_data))
     if resume_from_checkpoint:
@@ -223,17 +245,24 @@ def train(
         auc = roc_auc_score(pre[1], pre[0])
         return {'auc': auc}
     
+    # For batch validation, try this one.    
     def preprocess_logits_for_metrics(logits, labels):
-        """
-        Original Trainer may have a memory leak. 
-        This is a workaround to avoid storing too many tensors that are not needed.
-        """
+        def filter_last_indices(labels_index):
+            unique_values, indices = torch.unique(labels_index[:, 0], return_inverse = True)
+            max_indices = torch.zeros(len(unique_values), dtype = torch.long)
+            for i in range(len(unique_values)):
+                group = torch.nonzero(indices == i, as_tuple = False).squeeze()
+                max_in_group = torch.argmax(labels_index[group, 1])
+                max_indices[i] = group[max_in_group]
+            return labels_index[max_indices]
+
         labels_index = torch.argwhere(torch.bitwise_or(labels == 8241, labels == 3782))
+        labels_index = filter_last_indices(labels_index)
         gold = torch.where(labels[labels_index[:, 0], labels_index[:, 1]] == 3782, 0, 1)
-        labels_index[: , 1] = labels_index[: , 1] - 1
-        logits = logits.softmax(dim=-1)
-        logits = torch.softmax(logits[labels_index[:, 0], labels_index[:, 1]][:,[3782, 8241]], dim = -1)
-        return logits[:, 1][2::3], gold[2::3]
+        labels_index[:, 1] = labels_index[:, 1] - 1
+        logits = logits.softmax(dim = -1)
+        logits = torch.softmax(logits[labels_index[:, 0], labels_index[:, 1]][:, [3782, 8241]], dim = -1)
+        return logits[:, 1], gold  # yes prob , yes label
 
     os.environ["WANDB_DISABLED"] = "true"
     
@@ -267,38 +296,30 @@ def train(
             ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
             report_to=None,
-            gradient_checkpointing=False,
-            # report_to="wandb" if use_wandb else None,
-            # run_name=wandb_run_name if use_wandb else None,
-            # eval_accumulation_steps=10,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
         compute_metrics=compute_metrics,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-        callbacks = [EarlyStoppingCallback(early_stopping_patience=10)]
+        callbacks = [EarlyStoppingCallback(early_stopping_patience=10), SavePeftModelCallback]
     )
     model.config.use_cache = False
-
+    '''
     old_state_dict = model.state_dict
     model.state_dict = (
         lambda self, *_, **__: get_peft_model_state_dict(
             self, old_state_dict()
         )
     ).__get__(model, type(model))
-
+    '''
     if torch.__version__ >= "2" and sys.platform != "win32":
         model = torch.compile(model)
-
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-
     model.save_pretrained(output_dir)
-
     print(
         "\n If there's a warning about missing keys above, please disregard :)"
     )
-
 
 def generate_prompt(data_point):
     # sorry about the formatting disaster gotta move fast
