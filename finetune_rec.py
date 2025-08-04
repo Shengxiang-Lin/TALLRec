@@ -56,16 +56,16 @@ class SavePeftModelCallback(TrainerCallback):
 def train(
     # model/data params
     base_model: str = "base_models/decapoda-research-llama-7B-hf",  # the only required argument
-    train_data_path: str = "data/book/train.json",
-    val_data_path: str = "data/book/valid.json",
-    output_dir: str = "./lora-alpaca/book_16_42",
-    sample: int = 16,
+    train_data_path: str = "data/movie/train.json",
+    val_data_path: str = "data/movie/valid.json",
+    output_dir: str = "./lora-alpaca/movie_64_42",
+    sample: int = 64,
     seed: int = 42,
     # training hyperparams
     batch_size: int = 128,
     micro_batch_size: int = 4,
     num_epochs: int = 200,
-    learning_rate: float = 3e-4,
+    learning_rate: float = 3e-3,
     cutoff_len: int = 256,
     # lora hyperparams
     lora_r: int = 8,
