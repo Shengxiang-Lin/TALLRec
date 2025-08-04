@@ -1,4 +1,5 @@
 import sys
+
 import fire
 import gradio as gr
 import torch
@@ -11,7 +12,6 @@ os.environ['OMP_NUM_THREADS'] = '1'
 from peft import PeftModel
 from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
 from sklearn.metrics import roc_auc_score
-
 if torch.cuda.is_available():
     device = "cuda"
 else:
@@ -23,34 +23,52 @@ try:
 except:  # noqa: E722
     pass
 
+
 def main(
     load_8bit: bool = False,
     base_model: str = "base_models/decapoda-research-llama-7B-hf",
-    lora_weights: str = "results_medium/results_medium_book_42_64",
-    test_data_path: str = "data/book/test-1.json",
-    result_json_data: str = "tmp.json",
-    batch_size: int = 2,
+    lora_weights: str = "lora-alpaca/book_256_42",
+    test_data_path: str = "data/book/test.json",
+    result_json_data: str = "final_evaluation.json",
+    batch_size: int = 64,
     share_gradio: bool = False,
 ):
-    assert base_model, "Please specify a --base_model"
+    assert (
+        base_model
+    ), "Please specify a --base_model, e.g. --base_model='decapoda-research/llama-7b-hf'"
 
     model_type = lora_weights.split('/')[-1]
     model_name = '_'.join(model_type.split('_')[:2])
 
-    train_sce = 'book' if 'book' in model_type else 'movie'
-    test_sce = 'book' if 'book' in test_data_path else 'movie'
+    if model_type.find('book') > -1:
+        train_sce = 'book'
+    else:
+        train_sce = 'movie'
+    
+    if test_data_path.find('book') > -1:
+        test_sce = 'book'
+    else:
+        test_sce = 'movie'
+    
     temp_list = model_type.split('_')
-    seed = temp_list[-2]
-    sample = temp_list[-1]
-
+    seed = temp_list[-1]
+    sample = temp_list[-2]
     if os.path.exists(result_json_data):
-        with open(result_json_data, 'r') as f:
-            data = json.load(f)
+        f = open(result_json_data, 'r')
+        data = json.load(f)
+        f.close()
     else:
         data = dict()
 
-    data.setdefault(train_sce, {}).setdefault(test_sce, {}).setdefault(model_name, {}).setdefault(seed, {})
-    if sample in data[train_sce][test_sce][model_name][seed]:
+    if not data.__contains__(train_sce):
+        data[train_sce] = {}
+    if not data[train_sce].__contains__(test_sce):
+        data[train_sce][test_sce] = {}
+    if not data[train_sce][test_sce].__contains__(model_name):
+        data[train_sce][test_sce][model_name] = {}
+    if not data[train_sce][test_sce][model_name].__contains__(seed):
+        data[train_sce][test_sce][model_name][seed] = {}
+    if data[train_sce][test_sce][model_name][seed].__contains__(sample):
         exit(0)
 
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
@@ -65,8 +83,7 @@ def main(
             model,
             lora_weights,
             torch_dtype=torch.float16,
-            device_map={'': 0},
-            local_files_only=True
+            device_map="auto"
         )
     elif device == "mps":
         model = LlamaForCausalLM.from_pretrained(
@@ -79,7 +96,6 @@ def main(
             lora_weights,
             device_map={"": device},
             torch_dtype=torch.float16,
-            local_files_only=True
         )
     else:
         model = LlamaForCausalLM.from_pretrained(
@@ -89,16 +105,15 @@ def main(
             model,
             lora_weights,
             device_map={"": device},
-            local_files_only=True
         )
-
     tokenizer.padding_side = "left"
+    # unwind broken decapoda-research config
     model.config.pad_token_id = tokenizer.pad_token_id = 0  # unk
     model.config.bos_token_id = 1
     model.config.eos_token_id = 2
 
     if not load_8bit:
-        model.half()
+        model.half()  # seems to fix bugs for some users.
 
     model.eval()
     if torch.__version__ >= "2" and sys.platform != "win32":
@@ -116,7 +131,7 @@ def main(
         **kwargs,
     ):
         prompt = [generate_prompt(instruction, input) for instruction, input in zip(instructions, inputs)]
-        inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=128).to(device)
+        inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=256).to(device)
         generation_config = GenerationConfig(
             temperature=temperature,
             top_p=top_p,
@@ -131,16 +146,25 @@ def main(
                 return_dict_in_generate=True,
                 output_scores=True,
                 max_new_tokens=max_new_tokens,
+                # batch_size=batch_size,
             )
         s = generation_output.sequences
         scores = generation_output.scores[0].softmax(dim=-1)
-        logits = scores[:, [8241, 3782]].clone().detach().to(torch.float32).softmax(dim=-1)
+        logits = torch.tensor(scores[:,[8241, 3782]], dtype=torch.float32).softmax(dim=-1)
+        input_ids = inputs["input_ids"].to(device)
+        L = input_ids.shape[1]
+        s = generation_output.sequences
         output = tokenizer.batch_decode(s, skip_special_tokens=True)
         output = [_.split('Response:\n')[-1] for _ in output]
+        
         return output, logits.tolist()
-
+        
+    # testing code for readme
+    logit_list = []
+    gold_list= []
     outputs = []
     logits = []
+    from tqdm import tqdm
     gold = []
     pred = []
 
@@ -149,49 +173,30 @@ def main(
         instructions = [_['instruction'] for _ in test_data]
         inputs = [_['input'] for _ in test_data]
         gold = [int(_['output'] == 'Yes.') for _ in test_data]
-
-        def batch(lst, batch_size=32):
-            chunk_size = (len(lst) - 1) // batch_size + 1
+        def batch(list, batch_size=32):
+            chunk_size = (len(list) - 1) // batch_size + 1
             for i in range(chunk_size):
-                yield lst[batch_size * i: batch_size * (i + 1)]
-
-        from tqdm import tqdm
-        for i, batch_pack in tqdm(enumerate(zip(batch(instructions), batch(inputs)))):
-            instructions_batch, inputs_batch = batch_pack
-            output, logit = evaluate(instructions_batch, inputs_batch)
-            outputs += output
-            logits += logit
-
-        for i, test in enumerate(test_data):
+                yield list[batch_size * i: batch_size * (i + 1)]
+        for i, batch in tqdm(enumerate(zip(batch(instructions), batch(inputs)))):
+            instructions, inputs = batch
+            output, logit = evaluate(instructions, inputs)
+            outputs = outputs + output
+            logits = logits + logit
+        for i, test in tqdm(enumerate(test_data)):
             test_data[i]['predict'] = outputs[i]
             test_data[i]['logits'] = logits[i]
-            pred.append(logits[i][0])  # 取Yes的概率作为打分
-
-    # 打印前5个样本的预测信息
-    print("\n==== Top 5 Predictions ====")
-    for i in range(min(5, len(test_data))):
-        print(f"[{i}] Instruction: {test_data[i]['instruction']}")
-        print(f"    Input: {test_data[i]['input']}")
-        print(f"    Predict: {test_data[i]['predict']}")
-        print(f"    Logits (Yes, No): {test_data[i]['logits']}")
-        print(f"    Gold: {'Yes.' if gold[i] == 1 else 'No.'}")
-        print("-" * 50)
+            pred.append(logits[i][0])
 
     from sklearn.metrics import roc_auc_score
-    auc = roc_auc_score(gold, pred)
-    data[train_sce][test_sce][model_name][seed][sample] = auc
 
-    # 保存AUC结果
-    with open(result_json_data, 'w') as f:
-        json.dump(data, f, indent=4)
-
-    # 保存所有样本预测详情
-    with open("detailed_predictions.json", "w") as f_pred:
-        json.dump(test_data, f_pred, indent=4, ensure_ascii=False)
+    data[train_sce][test_sce][model_name][seed][sample] = roc_auc_score(gold, pred)
+    f = open(result_json_data, 'w')
+    json.dump(data, f, indent=4)
+    f.close()
 
 def generate_prompt(instruction, input=None):
     if input:
-        return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+        return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.  # noqa: E501
 
 ### Instruction:
 {instruction}
@@ -202,13 +207,14 @@ def generate_prompt(instruction, input=None):
 ### Response:
 """
     else:
-        return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.
+        return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.  # noqa: E501
 
 ### Instruction:
 {instruction}
 
 ### Response:
 """
+
 
 if __name__ == "__main__":
     fire.Fire(main)

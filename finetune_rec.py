@@ -55,16 +55,16 @@ class SavePeftModelCallback(TrainerCallback):
     
 def train(
     # model/data params
-    base_model: str = "",  # the only required argument
-    train_data_path: str = "",
-    val_data_path: str = "",
-    output_dir: str = "./lora-alpaca",
-    sample: int = -1,
-    seed: int = 0,
+    base_model: str = "base_models/decapoda-research-llama-7B-hf",  # the only required argument
+    train_data_path: str = "data/book/train.json",
+    val_data_path: str = "data/book/valid.json",
+    output_dir: str = "./lora-alpaca/book_16_42",
+    sample: int = 16,
+    seed: int = 42,
     # training hyperparams
     batch_size: int = 128,
     micro_batch_size: int = 4,
-    num_epochs: int = 3,
+    num_epochs: int = 200,
     learning_rate: float = 3e-4,
     cutoff_len: int = 256,
     # lora hyperparams
@@ -141,9 +141,10 @@ def train(
         load_in_8bit=True,
         torch_dtype=torch.float16,
         device_map=device_map,
+        local_files_only=True
     )
 
-    tokenizer = LlamaTokenizer.from_pretrained(base_model)
+    tokenizer = LlamaTokenizer.from_pretrained(base_model, local_files_only=True)
 
     tokenizer.pad_token_id = (
         0  # unk. we want this to be different from the eos token
