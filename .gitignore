@@ -13,3 +13,4 @@ bitsandbytes/
 base_models/
 alpaca-lora-7B/
 results_medium/
+cache/

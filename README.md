@@ -7,12 +7,12 @@ Our weights for the instruction tuning model is uploading [here](https://drive.g
 We introduce a novel framework (TALLRec) that enables the efficient and effective adaptation of LLMs to recommendation tasks.
 
 # Main results
-Book
+Book     
 |--------- | -----  | -----  | ----- | ----- | ----- | 
 | Samples  | 16     | 32     | 64    | 128   | 256   |
 |---------  | ----- | ----- | ----- | ----- | ----- | ----- |
 | TALLRec  |       |        | 56.37  | 55.55 | 55.46 |
-Movie
+Movie       
 |--------- | -----  | -----  | ----- | ----- | ----- | 
 | Samples  | 16     | 32     | 64    | 128   | 256   |
 |---------  | ----- | ----- | ----- | ----- | ----- | ----- |
